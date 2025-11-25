@@ -1,4 +1,4 @@
-name: Validate PR & Preview input.json
+name: Validate PR & Preview input.json (with check run)
 
 on:
   pull_request_target:
@@ -8,12 +8,13 @@ permissions:
   contents: write
   issues: write
   pull-requests: write
+  checks: write
 
 jobs:
   validate-preview-write:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR body fields and write file/input.json
+      - name: Validate PR body fields, post preview, create check run, write file on merge
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -39,8 +40,9 @@ jobs:
             const bodyRaw = pr?.body || "";
             const action = context.payload.action;
             const merged = pr?.merged;
+            const checkName = "PR Template Validation";
 
-            // Normalize and strip markdown
+            // Normalize and strip obvious markdown
             const body = bodyRaw
               .replace(/\*\*/g, "")
               .replace(/[_>`~-]/g, "")
@@ -51,7 +53,7 @@ jobs:
             const result = {};
             const missing = [];
 
-            // Parse each label robustly
+            // Parse labels robustly (prevents bleed-over)
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i].trim();
               const labelMatch = REQUIRED_LABELS.find(label =>
@@ -61,7 +63,7 @@ jobs:
               if (labelMatch) {
                 let value = line.substring(labelMatch.length).trim();
 
-                // If blank, look ahead a few lines for a non-empty non-label line
+                // If no inline value, look ahead a few lines for a value that is not a label
                 if (!value) {
                   let j = i + 1;
                   while (j < lines.length && !lines[j].trim().match(/^[A-Z][A-Za-z ]*:/)) {
@@ -73,52 +75,78 @@ jobs:
                   }
                 }
 
-                // Clean extra markdown and spaces
+                // cleanup
                 value = value.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
 
                 // Prevent label bleed (value starting with another label)
                 for (const lbl of REQUIRED_LABELS) {
-                  if (value.toLowerCase().startsWith(lbl.toLowerCase()) && value !== "NA") {
+                  if (value.toLowerCase().startsWith(lbl.toLowerCase()) && value.toLowerCase() !== "na") {
                     value = "";
                   }
                 }
 
-                const isEmpty = !value;
-                const isNA = /^NA$/i.test(value);
-
-                if (isEmpty) {
-                  missing.push(labelMatch);
+                // Accept NA, but reject empty
+                if (!value) {
+                  missing.push(labelMatch.replace(/:$/, ""));
                 } else {
-                  // Accept NA as valid
                   result[labelMatch.replace(/:$/, "")] = value;
                 }
               }
             }
 
+            // include uploaded template image path for preview (your uploaded file path)
+            result["TemplateImageUrl"] = "/mnt/data/IMG-20251125-WA0000.jpg";
+
             const jsonContent = JSON.stringify(result, null, 2);
 
-            // 1️⃣ Validate and preview before merge
+            // Helper: create a check run with summary + text and conclusion
+            async function createCheckRun(conclusion, summary, text) {
+              await github.rest.checks.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: checkName,
+                head_sha: pr.head.sha,
+                status: "completed",
+                conclusion: conclusion,
+                output: {
+                  title: checkName,
+                  summary: summary,
+                  text: text
+                }
+              });
+            }
+
+            // If not merged: validate and post preview or failure
             if (!merged) {
               if (missing.length > 0) {
-                const msg = [
+                const missingListText = missing.map(m => `- ${m}`).join("\n");
+                const commentBody = [
                   "⚠️ **PR validation failed**",
                   "",
                   "**Missing (empty) fields:**",
-                  ...missing.map(f => `- ${f}`),
+                  missingListText,
                   "",
-                  "Please fill all fields (use `NA` if not applicable)."
+                  "Please fill all fields (use `NA` if not applicable). After updating the PR description this check will re-run automatically."
                 ].join("\n");
 
+                // Post comment on PR
                 await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: context.issue.number,
-                  body: msg
+                  body: commentBody
                 });
 
-                throw new Error("Validation failed — some fields empty");
+                // Create a failed check run so the Checks tab shows the reason
+                const summary = `Validation failed: ${missing.length} missing field(s).`;
+                const text = `Missing fields:\n${missingListText}`;
+                await createCheckRun("failure", summary, text);
+
+                // fail the workflow step
+                throw new Error("Validation failed — missing fields: " + missing.join(", "));
               }
 
+              // All good — create a preview comment and a successful check run
               const preview = "🧾 **input.json preview:**\n```json\n" + jsonContent + "\n```\n✅ All fields validated (NA accepted).";
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
@@ -126,11 +154,16 @@ jobs:
                 issue_number: context.issue.number,
                 body: preview
               });
-              console.log("Preview posted successfully.");
+
+              const summary = "Validation succeeded: all required fields present (NA accepted).";
+              const text = "Preview posted to PR comment.";
+              await createCheckRun("success", summary, text);
+
+              console.log("Preview posted and check run success created.");
               return;
             }
 
-            // 2️⃣ Commit after merge
+            // If merged and action === closed -> write file to repo
             if (merged && action === "closed") {
               const path = "file/input.json";
               const message = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
@@ -158,6 +191,9 @@ jobs:
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: context.issue.number,
-                body: "✅ PR merged — `file/input.json` created successfully."
+                body: "✅ PR merged — `file/input.json` created/updated successfully."
               });
+
+              // final check run indicating commit done
+              await createCheckRun("success", "Committed file/input.json after merge", "File created/updated.");
             }
