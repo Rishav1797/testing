@@ -2,7 +2,7 @@ name: Validate PR & Commit input.json to appropriate businessConfig dirs
 
 on:
   pull_request_target:
-    types: [opened, edited, reopened, synchronize, closed]
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
   contents: write
@@ -39,7 +39,6 @@ jobs:
               "SPG:"
             ];
             const checkName = "PR Template Validation";
-            const templateImagePath = "/mnt/data/IMG-20251125-WA0000.jpg"; // uploaded file path
             // ---------------------------
 
             const pr = context.payload.pull_request;
@@ -50,7 +49,6 @@ jobs:
             const headBranch = pr.head.ref;
             const headSha = pr.head.sha;
             const prNumber = pr.number;
-            const action = context.payload.action;
 
             // Get the list of changed files
             const filesResp = await github.rest.pulls.listFiles({
@@ -93,7 +91,7 @@ jobs:
             const bodyRaw = pr.body || "";
             const body = bodyRaw
               .replace(/\*\*/g, "")
-              .replace(/[_>`~-]/g, "")
+              .replace(/[_>`~]/g, "")
               .replace(/\r\n/g, "\n")
               .trim();
 
@@ -105,70 +103,84 @@ jobs:
             function isPlaceholderValue(v) {
               if (!v) return true;
               const s = v.trim().toLowerCase();
-              // Accept NA as valid (so treat NA as NOT placeholder)
+              
+              // Accept NA as valid (not a placeholder)
               if (/^na$/i.test(s)) return false;
-              // Common placeholder patterns — treat as empty:
-              // - starts with "(" (e.g. "(e.g. ...)")
-              // - contains "e.g." or "eg:" or the word "example"
-              // - contains "choose one", "please fill", or looks like instruction text
-              if (/^\(.+\)$/.test(v.trim())) return true;
-              if (s.includes("e.g.") || s.includes("eg:") || s.includes("example")) return true;
-              if (s.includes("choose one") || s.includes("please fill") || s.includes("please")) return true;
-              // If the value is exactly the typical instruction sentence (very long and verbose), treat as placeholder
-              if (s.length < 3) return false; // very short strings like 'RE' are not placeholders
-              // otherwise treat as non-placeholder
+              
+              // Parenthetical examples: (e.g. ...), (choose one: ...), etc.
+              if (/^\(.+\)$/i.test(v.trim())) return true;
+              
+              // Contains common placeholder keywords
+              if (/e\.g\.|eg:|example|choose one|please fill|please enter|please select/i.test(s)) {
+                return true;
+              }
+              
+              // Very short strings (< 2 chars) are likely not placeholders
+              if (s.length < 2) return false;
+              
               return false;
             }
 
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i].trim();
+              
+              // Find matching label (case-insensitive)
               const labelMatch = REQUIRED_LABELS.find(label =>
                 line.toLowerCase().startsWith(label.toLowerCase())
               );
               if (!labelMatch) continue;
 
+              // Extract value on the same line after the label
               let value = line.substring(labelMatch.length).trim();
+              
+              // If no value on same line, look at next non-empty lines
               if (!value) {
                 let j = i + 1;
-                while (j < lines.length && !lines[j].trim().match(/^[A-Z][A-Za-z ]*:/)) {
-                  if (lines[j].trim()) {
-                    value = lines[j].trim();
+                while (j < lines.length) {
+                  const nextLine = lines[j].trim();
+                  
+                  // Stop if we hit another label
+                  if (REQUIRED_LABELS.some(lbl => 
+                    nextLine.toLowerCase().startsWith(lbl.toLowerCase())
+                  )) {
                     break;
                   }
+                  
+                  // Collect non-empty line
+                  if (nextLine && nextLine.length > 0) {
+                    value = nextLine;
+                    break;
+                  }
+                  
                   j++;
                 }
               }
 
-              // Clean value
-              value = (value || "").replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
+              // Clean value: remove markdown, collapse whitespace
+              value = (value || "")
+                .replace(/[*_`>~-]/g, "")
+                .replace(/\s+/g, " ")
+                .trim();
 
-              // Prevent label bleed (value starting with another label)
-              for (const lbl of REQUIRED_LABELS) {
-                if (value.toLowerCase().startsWith(lbl.toLowerCase()) && value.toLowerCase() !== "na") {
-                  value = "";
-                }
-              }
-
-              // Treat placeholder/helptext as empty
+              // Check if value is a placeholder
               if (isPlaceholderValue(value)) {
-                // If value is literally NA, isPlaceholderValue returns false above and NA will be accepted
-                // Otherwise treat as empty -> add to missing
                 missing.push(labelMatch.replace(/:$/, ""));
               } else {
                 result[labelMatch.replace(/:$/, "")] = value;
               }
             }
 
-            // If validation failed → fail the check and stop (post comment + failed check)
+            // If validation failed → fail the check and stop
             if (missing.length > 0) {
               const missingList = missing.map(m => `- ${m}`).join("\n");
               const commentBody = [
                 "⚠️ **PR validation failed**",
                 "",
-                "**Missing (empty) fields or placeholders detected:**",
+                "**Missing or placeholder fields:**",
                 missingList,
                 "",
-                "Please fill all fields with real values (use `NA` if not applicable). Placeholder text like `(e.g. ...)` or `example` will be considered empty."
+                "Please fill all fields with real values. Use `NA` if a field is not applicable.",
+                "Placeholder text like `(e.g. ...)` or `example` will be considered empty."
               ].join("\n");
 
               await github.rest.issues.createComment({
@@ -195,8 +207,6 @@ jobs:
               throw new Error("Validation failed — missing fields: " + missing.join(", "));
             }
 
-            // Add image path and prepare JSON
-            result["TemplateImageUrl"] = templateImagePath;
             const jsonContent = JSON.stringify(result, null, 2);
 
             // Commit to each detected businessConfig/<X> folder
@@ -214,7 +224,9 @@ jobs:
                   ref: headBranch
                 });
                 sha = res.data.sha;
-              } catch {}
+              } catch (e) {
+                // File doesn't exist yet, which is fine
+              }
 
               await github.rest.repos.createOrUpdateFileContents({
                 owner,
@@ -229,6 +241,7 @@ jobs:
               createdPaths.push(filePath);
             }
 
+            // Success check
             await github.rest.checks.create({
               owner,
               repo,
