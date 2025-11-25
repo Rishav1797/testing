@@ -1,12 +1,14 @@
 name: Validate PR & Create input.json
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, edited, reopened]
 
+# Ensure the workflow has permissions to write repository contents and comment on PRs
 permissions:
   contents: write
   issues: write
+  pull-requests: write
 
 jobs:
   validate-and-write:
@@ -35,9 +37,17 @@ jobs:
               "SPG:"
             ];
 
+            // PR body (string)
             const body = (context.payload.pull_request && context.payload.pull_request.body) || "";
             if (!body || body.trim().length === 0) {
-              throw new Error("PR body is empty — please include the PR Input Template in the description and fill all fields.");
+              // Post helpful comment and fail
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: "❌ PR body is empty — please include the PR Input Template in the description and fill all fields."
+              });
+              throw new Error("PR body empty");
             }
 
             // Split lines for scanning
@@ -71,16 +81,14 @@ jobs:
               } else if (value === "") {
                 missing.push(`Empty value for: ${label}`);
               } else {
-                // strip potential leading markdown like "**" or "- " and keep raw text
+                // strip potential surrounding markdown like **text**
                 const cleaned = value.replace(/^\*\*(.*)\*\*$/, "$1").trim();
-                // use label (without trailing colon) as key
                 const key = label.replace(/:$/, "").trim();
                 result[key] = cleaned;
               }
             }
 
             if (missing.length > 0) {
-              // Post comment describing failures and then fail the step
               const commentBody = [
                 "⚠️ **PR template validation failed**. Please fill all required fields in the PR description.",
                 "",
@@ -97,10 +105,13 @@ jobs:
                 body: commentBody
               });
 
-              throw new Error("PR validation failed:\n" + missing.join("\n"));
+              throw new Error("PR validation failed");
             }
 
             // All fields present — create JSON content
+            // Add the uploaded sample image path as a url field (the executor will transform it as needed)
+            result["TemplateImageUrl"] = "/mnt/data/IMG-20251125-WA0000.jpg";
+
             const jsonContent = JSON.stringify(result, null, 2);
 
             // Path to write: file/input.json
@@ -119,7 +130,7 @@ jobs:
                 sha = getResp.data.sha;
               }
             } catch (err) {
-              // file likely doesn't exist — that's ok, we'll create it
+              // file likely doesn't exist — we'll create it
             }
 
             // create or update file
@@ -132,11 +143,10 @@ jobs:
               sha: sha
             });
 
-            // final comment to confirm success
+            // final success comment
             await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
               issue_number: context.issue.number,
               body: `✅ PR template validated and \`${path}\` created/updated with the provided values.`
             });
-
