@@ -6,13 +6,18 @@
 
 # PR Input Template
 
-**Channels:** (e.g. Email, SMS, UIB, Push, AF, Commsee, DM)  
-**Headless:** (choose one: yes / no)  
+**Channels:** 
+(e.g. Email, SMS, UIB, Push, AF, Commsee, DM)  
+**Headless:** 
+(choose one: yes / no)  
 **Business Issue:**  
 **Crew Name:**  
-**Product Owner Name:**  **Product Owner Email:**  
-**Tech Lead Name:**  **Tech Lead Email:**  
-**Crew Lead Name:**  **Crew Lead Email:**  
+**Product Owner Name:**  
+**Product Owner Email:**  
+**Tech Lead Name:**  
+**Tech Lead Email:**  
+**Crew Lead Name:**  
+**Crew Lead Email:**  
 **Team Distribution List Email:**  
 **Commando Brief:**  
 **Comments:**  
