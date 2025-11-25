@@ -129,7 +129,7 @@ jobs:
             result["TemplateImageUrl"] = "/mnt/data/IMG-20251125-WA0000.jpg";
 
             const jsonContent = JSON.stringify(result, null, 2);
-            const path = "file/input.json";
+            const path = "file/businessConfig/input.json";
             const message = `Auto-generate ${path} for PR #${pr.number}`;
 
             // Get file SHA if already exists in branch
