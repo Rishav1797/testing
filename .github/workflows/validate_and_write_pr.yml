@@ -1,0 +1,142 @@
+name: Validate PR & Create input.json
+
+on:
+  pull_request:
+    types: [opened, edited, reopened]
+
+permissions:
+  contents: write
+  issues: write
+
+jobs:
+  validate-and-write:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validate PR body fields and write file/input.json
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // REQUIRED field labels exactly as expected (include colon)
+            const REQUIRED_LABELS = [
+              "Channels:",
+              "Headless:",
+              "Business Issue:",
+              "Crew Name:",
+              "Product Owner Name:",
+              "Product Owner Email:",
+              "Tech Lead Name:",
+              "Tech Lead Email:",
+              "Crew Lead Name:",
+              "Crew Lead Email:",
+              "Team Distribution List Email:",
+              "Commando Brief:",
+              "Comments:",
+              "SPG:"
+            ];
+
+            const body = (context.payload.pull_request && context.payload.pull_request.body) || "";
+            if (!body || body.trim().length === 0) {
+              throw new Error("PR body is empty — please include the PR Input Template in the description and fill all fields.");
+            }
+
+            // Split lines for scanning
+            const lines = body.split(/\r?\n/);
+
+            function findValueForLabel(label) {
+              // find first line that includes the label (case-insensitive)
+              const idx = lines.findIndex(l => l.toLowerCase().includes(label.toLowerCase()));
+              if (idx === -1) return null;
+
+              // get content after label on same line
+              const line = lines[idx];
+              const after = line.substring(line.toLowerCase().indexOf(label.toLowerCase()) + label.length).trim();
+
+              if (after && after.length > 0) return after;
+
+              // otherwise search subsequent lines for the first non-empty line (useful for multiline fields)
+              for (let i = idx + 1; i < Math.min(lines.length, idx + 6); i++) {
+                const cand = lines[i].trim();
+                if (cand.length > 0) return cand;
+              }
+              return ""; // found label but no value
+            }
+
+            const missing = [];
+            const result = {};
+            for (const label of REQUIRED_LABELS) {
+              const value = findValueForLabel(label);
+              if (value === null) {
+                missing.push(`Missing field (label not found): ${label}`);
+              } else if (value === "") {
+                missing.push(`Empty value for: ${label}`);
+              } else {
+                // strip potential leading markdown like "**" or "- " and keep raw text
+                const cleaned = value.replace(/^\*\*(.*)\*\*$/, "$1").trim();
+                // use label (without trailing colon) as key
+                const key = label.replace(/:$/, "").trim();
+                result[key] = cleaned;
+              }
+            }
+
+            if (missing.length > 0) {
+              // Post comment describing failures and then fail the step
+              const commentBody = [
+                "⚠️ **PR template validation failed**. Please fill all required fields in the PR description.",
+                "",
+                "**Problems found:**",
+                ...missing.map(m => `- ${m}`),
+                "",
+                "Make sure you used the PR Input Template and filled each bold field (or `NA` where not applicable). After updating the PR description this check will re-run automatically."
+              ].join("\n");
+
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: commentBody
+              });
+
+              throw new Error("PR validation failed:\n" + missing.join("\n"));
+            }
+
+            // All fields present — create JSON content
+            const jsonContent = JSON.stringify(result, null, 2);
+
+            // Path to write: file/input.json
+            const path = "file/input.json";
+            const message = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
+
+            // Check if file already exists to supply sha if needed
+            let sha = undefined;
+            try {
+              const getResp = await github.rest.repos.getContent({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                path: path
+              });
+              if (getResp && getResp.data && getResp.data.sha) {
+                sha = getResp.data.sha;
+              }
+            } catch (err) {
+              // file likely doesn't exist — that's ok, we'll create it
+            }
+
+            // create or update file
+            await github.rest.repos.createOrUpdateFileContents({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: path,
+              message: message,
+              content: Buffer.from(jsonContent).toString('base64'),
+              sha: sha
+            });
+
+            // final comment to confirm success
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `✅ PR template validated and \`${path}\` created/updated with the provided values.`
+            });
+
