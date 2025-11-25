@@ -1,8 +1,8 @@
-name: Validate PR & Preview input.json (with check run)
+name: Validate PR & Commit input.json to PR branch
 
 on:
   pull_request_target:
-    types: [opened, edited, reopened, closed]
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
   contents: write
@@ -11,10 +11,10 @@ permissions:
   checks: write
 
 jobs:
-  validate-preview-write:
+  validate-and-commit:
     runs-on: ubuntu-latest
     steps:
-      - name: Validate PR body fields, post preview, create check run, write file on merge
+      - name: Validate PR fields and commit input.json
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
@@ -38,11 +38,12 @@ jobs:
 
             const pr = context.payload.pull_request;
             const bodyRaw = pr?.body || "";
-            const action = context.payload.action;
-            const merged = pr?.merged;
-            const checkName = "PR Template Validation";
+            const headBranch = pr.head.ref;
+            const headSha = pr.head.sha;
+            const repo = context.repo.repo;
+            const owner = context.repo.owner;
 
-            // Normalize and strip obvious markdown
+            // Clean markdown and normalize
             const body = bodyRaw
               .replace(/\*\*/g, "")
               .replace(/[_>`~-]/g, "")
@@ -53,147 +54,124 @@ jobs:
             const result = {};
             const missing = [];
 
-            // Parse labels robustly (prevents bleed-over)
             for (let i = 0; i < lines.length; i++) {
               const line = lines[i].trim();
-              const labelMatch = REQUIRED_LABELS.find(label =>
-                line.toLowerCase().startsWith(label.toLowerCase())
+              const label = REQUIRED_LABELS.find(l =>
+                line.toLowerCase().startsWith(l.toLowerCase())
               );
+              if (!label) continue;
 
-              if (labelMatch) {
-                let value = line.substring(labelMatch.length).trim();
+              let value = line.substring(label.length).trim();
 
-                // If no inline value, look ahead a few lines for a value that is not a label
-                if (!value) {
-                  let j = i + 1;
-                  while (j < lines.length && !lines[j].trim().match(/^[A-Z][A-Za-z ]*:/)) {
-                    if (lines[j].trim()) {
-                      value = lines[j].trim();
-                      break;
-                    }
-                    j++;
+              // Look ahead for multi-line values
+              if (!value) {
+                let j = i + 1;
+                while (j < lines.length && !lines[j].trim().match(/^[A-Z][A-Za-z ]*:/)) {
+                  if (lines[j].trim()) {
+                    value = lines[j].trim();
+                    break;
                   }
-                }
-
-                // cleanup
-                value = value.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
-
-                // Prevent label bleed (value starting with another label)
-                for (const lbl of REQUIRED_LABELS) {
-                  if (value.toLowerCase().startsWith(lbl.toLowerCase()) && value.toLowerCase() !== "na") {
-                    value = "";
-                  }
-                }
-
-                // Accept NA, but reject empty
-                if (!value) {
-                  missing.push(labelMatch.replace(/:$/, ""));
-                } else {
-                  result[labelMatch.replace(/:$/, "")] = value;
+                  j++;
                 }
               }
+
+              value = value.replace(/[*_`>~-]/g, "").replace(/\s+/g, " ").trim();
+
+              // Avoid label bleed
+              for (const l2 of REQUIRED_LABELS) {
+                if (value.toLowerCase().startsWith(l2.toLowerCase()) && value.toLowerCase() !== "na") {
+                  value = "";
+                }
+              }
+
+              const isEmpty = !value;
+              const isNA = /^NA$/i.test(value);
+
+              if (isEmpty) missing.push(label);
+              else result[label.replace(/:$/, "")] = value;
             }
 
-            // include uploaded template image path for preview (your uploaded file path)
+            if (missing.length > 0) {
+              const msg = [
+                "⚠️ **PR validation failed**",
+                "",
+                "**Missing (empty) fields:**",
+                ...missing.map(f => `- ${f}`),
+                "",
+                "Please fill all fields (use `NA` if not applicable)."
+              ].join("\n");
+
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body: msg
+              });
+
+              await github.rest.checks.create({
+                owner,
+                repo,
+                name: "PR Template Validation",
+                head_sha: headSha,
+                status: "completed",
+                conclusion: "failure",
+                output: {
+                  title: "Validation failed",
+                  summary: `Missing ${missing.length} field(s)`,
+                  text: missing.join(", ")
+                }
+              });
+
+              throw new Error("Validation failed — missing fields");
+            }
+
+            // Include uploaded image reference
             result["TemplateImageUrl"] = "/mnt/data/IMG-20251125-WA0000.jpg";
 
             const jsonContent = JSON.stringify(result, null, 2);
+            const path = "file/input.json";
+            const message = `Auto-generate ${path} for PR #${pr.number}`;
 
-            // Helper: create a check run with summary + text and conclusion
-            async function createCheckRun(conclusion, summary, text) {
-              await github.rest.checks.create({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                name: checkName,
-                head_sha: pr.head.sha,
-                status: "completed",
-                conclusion: conclusion,
-                output: {
-                  title: checkName,
-                  summary: summary,
-                  text: text
-                }
-              });
-            }
-
-            // If not merged: validate and post preview or failure
-            if (!merged) {
-              if (missing.length > 0) {
-                const missingListText = missing.map(m => `- ${m}`).join("\n");
-                const commentBody = [
-                  "⚠️ **PR validation failed**",
-                  "",
-                  "**Missing (empty) fields:**",
-                  missingListText,
-                  "",
-                  "Please fill all fields (use `NA` if not applicable). After updating the PR description this check will re-run automatically."
-                ].join("\n");
-
-                // Post comment on PR
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  body: commentBody
-                });
-
-                // Create a failed check run so the Checks tab shows the reason
-                const summary = `Validation failed: ${missing.length} missing field(s).`;
-                const text = `Missing fields:\n${missingListText}`;
-                await createCheckRun("failure", summary, text);
-
-                // fail the workflow step
-                throw new Error("Validation failed — missing fields: " + missing.join(", "));
-              }
-
-              // All good — create a preview comment and a successful check run
-              const preview = "🧾 **input.json preview:**\n```json\n" + jsonContent + "\n```\n✅ All fields validated (NA accepted).";
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: preview
-              });
-
-              const summary = "Validation succeeded: all required fields present (NA accepted).";
-              const text = "Preview posted to PR comment.";
-              await createCheckRun("success", summary, text);
-
-              console.log("Preview posted and check run success created.");
-              return;
-            }
-
-            // If merged and action === closed -> write file to repo
-            if (merged && action === "closed") {
-              const path = "file/input.json";
-              const message = `Add/update ${path} from PR #${context.issue.number} by ${context.actor}`;
-
-              let sha;
-              try {
-                const res = await github.rest.repos.getContent({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  path
-                });
-                sha = res.data.sha;
-              } catch {}
-
-              await github.rest.repos.createOrUpdateFileContents({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
+            // Get file SHA if already exists in branch
+            let sha;
+            try {
+              const res = await github.rest.repos.getContent({
+                owner,
+                repo,
                 path,
-                message,
-                content: Buffer.from(jsonContent).toString("base64"),
-                sha
+                ref: headBranch
               });
+              sha = res.data.sha;
+            } catch {}
 
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: "✅ PR merged — `file/input.json` created/updated successfully."
-              });
+            // Commit directly to PR branch
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,
+              repo,
+              path,
+              message,
+              content: Buffer.from(jsonContent).toString("base64"),
+              sha,
+              branch: headBranch
+            });
 
-              // final check run indicating commit done
-              await createCheckRun("success", "Committed file/input.json after merge", "File created/updated.");
-            }
+            await github.rest.checks.create({
+              owner,
+              repo,
+              name: "PR Template Validation",
+              head_sha: headSha,
+              status: "completed",
+              conclusion: "success",
+              output: {
+                title: "Validation succeeded",
+                summary: "All required fields filled (NA accepted).",
+                text: `Committed ${path} to branch ${headBranch}`
+              }
+            });
+
+            await github.rest.issues.createComment({
+              owner,
+              repo,
+              issue_number: pr.number,
+              body: `✅ Validation passed. \`${path}\` has been committed to **${headBranch}** and will appear under *Files changed*.`
+            });
