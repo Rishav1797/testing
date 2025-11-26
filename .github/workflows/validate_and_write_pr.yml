@@ -261,9 +261,16 @@ jobs:
               console.log(`Using GITHUB_TOKEN to commit to base repo: ${commitOwner}/${commitRepo}`);
             }
 
-            // Create octokit instance with appropriate token
-            const { Octokit } = require("@actions/github/lib/utils");
-            const octokit = new Octokit({ auth: token });
+            // Use appropriate github client for commit
+            let commitClient;
+            if (isFork) {
+              // For forks, create new client with PAT token
+              const { Octokit } = require("@actions/github/lib/utils");
+              commitClient = new Octokit({ auth: token });
+            } else {
+              // For base repo, use default github client
+              commitClient = github;
+            }
 
             // Commit to each detected businessConfig/<X> folder
             const createdPaths = [];
@@ -273,7 +280,7 @@ jobs:
 
               let sha;
               try {
-                const res = await octokit.rest.repos.getContent({
+                const res = await commitClient.rest.repos.getContent({
                   owner: commitOwner,
                   repo: commitRepo,
                   path: filePath,
@@ -284,7 +291,7 @@ jobs:
                 console.log(`File ${filePath} does not exist yet`);
               }
 
-              await octokit.rest.repos.createOrUpdateFileContents({
+              await commitClient.rest.repos.createOrUpdateFileContents({
                 owner: commitOwner,
                 repo: commitRepo,
                 path: filePath,
