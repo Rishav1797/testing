@@ -35,8 +35,7 @@ jobs:
           
           if [ -z "$PAYLOAD_FILE" ]; then
             echo "❌ No payload.json found"
-            echo "PR Number: 0"
-            core.setOutput('pr_number', '0')
+            echo "pr_number=0" >> $GITHUB_OUTPUT
             exit 0
           fi
           
@@ -52,10 +51,7 @@ jobs:
           
           echo "PR Number: $PR_NUMBER"
           echo "pr_number=$PR_NUMBER" >> $GITHUB_OUTPUT
-          
-          # Save payload for next step
           echo "payload_file=$PAYLOAD_FILE" >> $GITHUB_OUTPUT
-        shell: bash
 
       - name: Parse artifact and create files
         if: steps.pr_info.outputs.pr_number != '0'
