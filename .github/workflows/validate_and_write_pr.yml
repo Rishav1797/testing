@@ -266,6 +266,8 @@ jobs:
               const tokenToUse = usePatToken ? token : context.token;
               const url = `https://api.github.com${endpoint}`;
               
+              console.log(`API ${method} ${url}`);
+              
               const options = {
                 method,
                 headers: {
@@ -280,40 +282,48 @@ jobs:
               }
 
               const response = await fetch(url, options);
+              const responseText = await response.text();
+              
               if (!response.ok && response.status !== 404) {
+                console.log(`Response status: ${response.status}`);
+                console.log(`Response body: ${responseText}`);
                 throw new Error(`API call failed: ${response.status} ${response.statusText}`);
               }
               
-              return response.ok ? await response.json() : null;
+              return response.ok && responseText ? JSON.parse(responseText) : null;
             }
 
             // Commit to each detected businessConfig/<X> folder
             const createdPaths = [];
             for (const target of Array.from(targets)) {
               const filePath = `${target}/input.json`;
+              const encodedPath = filePath.split('/').map(p => encodeURIComponent(p)).join('/');
               const message = `Auto-generate ${filePath} for PR #${prNumber}`;
               const usePatToken = isFork;
+
+              console.log(`Processing: ${filePath} (encoded: ${encodedPath})`);
 
               let sha = null;
               try {
                 // Get existing file SHA if it exists
                 const existingFile = await githubApiCall(
                   'GET',
-                  `/repos/${commitOwner}/${commitRepo}/contents/${filePath}?ref=${headBranch}`,
+                  `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}?ref=${encodeURIComponent(headBranch)}`,
                   null,
                   usePatToken
                 );
                 if (existingFile) {
                   sha = existingFile.sha;
+                  console.log(`Found existing file with SHA: ${sha}`);
                 }
               } catch (e) {
-                console.log(`File ${filePath} does not exist yet`);
+                console.log(`File ${filePath} does not exist yet: ${e.message}`);
               }
 
               // Create or update file
-              await githubApiCall(
+              const result = await githubApiCall(
                 'PUT',
-                `/repos/${commitOwner}/${commitRepo}/contents/${filePath}`,
+                `/repos/${commitOwner}/${commitRepo}/contents/${encodedPath}`,
                 {
                   message,
                   content: Buffer.from(jsonContent).toString("base64"),
@@ -322,6 +332,10 @@ jobs:
                 },
                 usePatToken
               );
+
+              if (result && result.commit) {
+                console.log(`Successfully committed to ${headBranch}: ${result.commit.sha}`);
+              }
 
               createdPaths.push(filePath);
               console.log(`Created/Updated: ${filePath}`);
