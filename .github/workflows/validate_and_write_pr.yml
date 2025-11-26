@@ -57,7 +57,7 @@ jobs:
             
             console.log(`Fork PR: ${isFork}`);
             if (isFork) {
-              console.log(`Fork owner: ${forkOwner}, Fork repo: ${forkRepo}`);
+              console.log(`Fork: ${forkFullName}`);
             }
 
             // Get the list of changed files
@@ -219,11 +219,51 @@ jobs:
 
             const jsonContent = JSON.stringify(result, null, 2);
 
-            // Determine commit target (fork or base repo)
-            const commitOwner = isFork ? forkOwner : baseOwner;
-            const commitRepo = isFork ? forkRepo : baseRepo;
+            // Determine which token and target to use
+            let commitOwner, commitRepo, token;
+            if (isFork) {
+              // Use PAT for fork writes
+              token = context.token; // Try to use fork token if available
+              const patToken = process.env.PAT_TOKEN;
+              if (!patToken) {
+                console.log("PAT_TOKEN not set — cannot commit to fork. Validation only.");
+                await github.rest.checks.create({
+                  owner: baseOwner,
+                  repo: baseRepo,
+                  name: checkName,
+                  head_sha: headSha,
+                  status: "completed",
+                  conclusion: "success",
+                  output: {
+                    title: "Validation succeeded (fork — no PAT)",
+                    summary: "Template validation passed. Commit requires PAT_TOKEN.",
+                    text: "For automatic commits to fork repos, set PAT_TOKEN secret in the base repository with repo scope."
+                  }
+                });
 
-            console.log(`Committing to: ${commitOwner}/${commitRepo} on branch ${headBranch}`);
+                await github.rest.issues.createComment({
+                  owner: baseOwner,
+                  repo: baseRepo,
+                  issue_number: prNumber,
+                  body: "✅ Validation passed! However, automatic commit to fork requires a Personal Access Token. Please contact repository maintainers."
+                });
+                return;
+              }
+
+              commitOwner = forkOwner;
+              commitRepo = forkRepo;
+              token = patToken;
+              console.log(`Using PAT to commit to fork: ${commitOwner}/${commitRepo}`);
+            } else {
+              commitOwner = baseOwner;
+              commitRepo = baseRepo;
+              token = context.token;
+              console.log(`Using GITHUB_TOKEN to commit to base repo: ${commitOwner}/${commitRepo}`);
+            }
+
+            // Create octokit instance with appropriate token
+            const { Octokit } = require("@actions/github/lib/utils");
+            const octokit = new Octokit({ auth: token });
 
             // Commit to each detected businessConfig/<X> folder
             const createdPaths = [];
@@ -233,7 +273,7 @@ jobs:
 
               let sha;
               try {
-                const res = await github.rest.repos.getContent({
+                const res = await octokit.rest.repos.getContent({
                   owner: commitOwner,
                   repo: commitRepo,
                   path: filePath,
@@ -241,11 +281,10 @@ jobs:
                 });
                 sha = res.data.sha;
               } catch (e) {
-                // File doesn't exist yet, which is fine
                 console.log(`File ${filePath} does not exist yet`);
               }
 
-              await github.rest.repos.createOrUpdateFileContents({
+              await octokit.rest.repos.createOrUpdateFileContents({
                 owner: commitOwner,
                 repo: commitRepo,
                 path: filePath,
@@ -260,9 +299,9 @@ jobs:
             }
 
             // Success check
-            const checkSummary = isFork 
-              ? `Created ${createdPaths.length} file(s) in fork.`
-              : `Created ${createdPaths.length} file(s).`;
+            const locationInfo = isFork 
+              ? `Committed to fork ${forkOwner}/${forkRepo}`
+              : `Committed to base repo ${baseOwner}/${baseRepo}`;
 
             await github.rest.checks.create({
               owner: baseOwner,
@@ -273,14 +312,14 @@ jobs:
               conclusion: "success",
               output: {
                 title: "Validation succeeded",
-                summary: checkSummary,
-                text: `Committed to branch ${headBranch}:\n${createdPaths.map(p => `- ${p}`).join("\n")}`
+                summary: `Created ${createdPaths.length} file(s).`,
+                text: `${locationInfo}:\n${createdPaths.map(p => `- ${p}`).join("\n")}`
               }
             });
 
             const commentPrefix = isFork 
-              ? `✅ Validation passed (fork PR). Committed file(s) to your fork:\n`
-              : `✅ Validation passed. Committed file(s):\n`;
+              ? `✅ Validation passed. Committed to your fork:\n`
+              : `✅ Validation passed. Committed to base repo:\n`;
 
             await github.rest.issues.createComment({
               owner: baseOwner,
@@ -290,3 +329,5 @@ jobs:
             });
 
             console.log("Committed:", createdPaths);
+        env:
+          PAT_TOKEN: ${{ secrets.PAT_TOKEN }}
