@@ -207,6 +207,14 @@ jobs:
               timestamp: new Date().toISOString()
             };
 
+            console.log(`\n=== Artifact Content ===`);
+            console.log(`PR Number: ${prNumber}`);
+            console.log(`Targets: ${Array.from(targets).join(', ')}`);
+            console.log(`\nTemplate Data:`);
+            console.log(JSON.stringify(result, null, 2));
+            console.log(`\nFull Artifact Payload:`);
+            console.log(JSON.stringify(artifactPayload, null, 2));
+
             // Export for next step
             core.exportVariable('VALIDATION_PASSED', 'true');
             core.exportVariable('ARTIFACT_PAYLOAD', JSON.stringify(artifactPayload));
@@ -232,6 +240,19 @@ jobs:
           name: pr-${{ env.PR_NUMBER }}-input-json
           path: artifact_data/payload.json
           retention-days: 30
+
+      - name: Display uploaded artifact content
+        if: env.VALIDATION_PASSED == 'true'
+        run: |
+          echo "=== Artifact Successfully Uploaded ==="
+          echo ""
+          echo "Artifact Name: pr-${{ env.PR_NUMBER }}-input-json"
+          echo "File: artifact_data/payload.json"
+          echo ""
+          echo "Content:"
+          cat artifact_data/payload.json | jq '.'
+          echo ""
+          echo "This will be used by Workflow 2 to generate input.json files"
 
       - name: Post validation success
         if: env.VALIDATION_PASSED == 'true'
@@ -259,11 +280,20 @@ jobs:
               }
             });
 
+            const templateData = Object.entries(payload.data)
+              .map(([key, value]) => `- **${key}:** ${value}`)
+              .join('\n');
+
             const body = [
               "✅ **Validation passed**",
               "",
-              "When this PR is merged, the following files will be created:",
-              filesList
+              "**Template data captured:**",
+              templateData,
+              "",
+              "**Files to be created:**",
+              filesList,
+              "",
+              "When this PR is merged, the following files will be automatically created in the base repository:"
             ].join("\n");
 
             await github.rest.issues.createComment({
