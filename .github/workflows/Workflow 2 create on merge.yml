@@ -144,13 +144,13 @@ jobs:
           echo "✅ Successfully created and pushed:"
           printf '%s\n' "${CREATED_FILES[@]}"
 
-      - name: Create Pull Request
+      - name: Post comment with PR creation link
         if: steps.pr_info.outputs.pr_number != '0'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const prNumber = parseInt('${{ env.pr_number }}');
+            const prNumber = parseInt('${{ steps.pr_info.outputs.pr_number }}');
             const branchName = '${{ env.branch_name }}';
             
             if (!prNumber || !branchName) {
@@ -158,41 +158,29 @@ jobs:
               return;
             }
             
-            console.log(`Creating PR from ${branchName} for original PR #${prNumber}`);
-            
+            // Post comment on original PR
             try {
-              const pr = await github.rest.pulls.create({
+              await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `Auto-generated: input.json for PR #${prNumber}`,
-                body: `This PR was automatically generated from PR #${prNumber}.\n\nIt contains the auto-generated input.json file(s) based on the PR template.\n\nPlease review and merge if approved.`,
-                head: branchName,
-                base: 'main'
+                issue_number: prNumber,
+                body: `✅ **Validation Complete & Files Generated**
+
+A new branch has been created with auto-generated input.json files:
+**Branch:** \`${branchName}\`
+
+🔗 **Create PR:** [Click here to create a PR from this branch](https://github.com/${{ github.repository }}/pull/new/${branchName})
+
+Or create manually:
+\`\`\`
+Branch: ${branchName}
+Target: main
+\`\`\`
+
+The branch is ready for review. Once the PR is created and merged, this original PR can be merged as well.`
               });
               
-              console.log(`✅ Created PR #${pr.data.number}`);
-              console.log(`PR URL: ${pr.data.html_url}`);
+              console.log(`✅ Posted comment with branch and PR creation link`);
             } catch (error) {
-              console.log(`Error creating PR: ${error.message}`);
-            }
-
-      - name: Post comment on original PR
-        if: steps.pr_info.outputs.pr_number != '0'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const prNumber = parseInt('${{ steps.pr_info.outputs.pr_number }}');
-            
-            if (prNumber > 0) {
-              try {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: prNumber,
-                  body: `✅ **Validation Complete**\n\nA PR with auto-generated input.json files has been created: automation/pr-${prNumber}-generated\n\nOnce that PR is merged, this PR can be merged as well.`
-                });
-              } catch (error) {
-                console.log('Could not post comment');
-              }
+              console.log(`Error posting comment: ${error.message}`);
             }
