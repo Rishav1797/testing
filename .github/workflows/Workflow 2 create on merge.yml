@@ -163,23 +163,27 @@ jobs:
             
             // Post comment on original PR
             try {
+              const message = [
+                "✅ Validation Complete & Files Generated",
+                "",
+                "A new branch has been created with auto-generated input.json files:",
+                "",
+                "Branch: " + branchName,
+                "",
+                "🔗 Create PR: " + createPrUrl,
+                "",
+                "Or create manually:",
+                "- Branch: " + branchName,
+                "- Target: main",
+                "",
+                "The branch is ready for review. Once the PR is created and merged, this original PR can be merged as well."
+              ].join("\n");
+
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: prNumber,
-                body: `✅ **Validation Complete & Files Generated**
-
-A new branch has been created with auto-generated input.json files:
-
-
-    🔗 **Create PR:** [Click here to create a PR from this branch](${createPrUrl})
-    Or create manually:
-    \`\`\`
-    Branch: ${branchName}
-    Target: main
-    \`\`\`
-
-The branch is ready for review. Once the PR is created and merged, this original PR can be merged as well.`
+                body: message
               });
               
               console.log(`✅ Posted comment with branch and PR creation link`);
