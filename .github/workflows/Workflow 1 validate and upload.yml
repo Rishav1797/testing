@@ -1,366 +1,304 @@
-name: Workflow 1 - Validate PR Template
+name: Validate PR Template & Upload Artifact
 
 on:
-  pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - edited
-    paths:
-      - 'pr-template/**'
-      - '.github/workflows/workflow-1-validate-pr.yml'
+  pull_request_target:
+    types: [opened, edited, reopened, synchronize]
 
 permissions:
-  pull-requests: write
   contents: read
+  issues: write
+  pull-requests: write
+  checks: write
 
 jobs:
-  validate-pr-template:
-    name: Validate PR Template Format & Fields
+  validate-and-upload:
     runs-on: ubuntu-latest
-    
     steps:
-      - name: Checkout PR branch
-        uses: actions/checkout@v4
+      - name: Validate PR template and upload artifact
+        uses: actions/github-script@v7
         with:
-          fetch-depth: 0
-      
-      - name: Setup Java
-        uses: actions/setup-java@v4
-        with:
-          java-version: '11'
-          distribution: 'temurin'
-          cache: gradle
-      
-      - name: Log PR Information
-        run: |
-          echo "=== PR Information ==="
-          echo "PR Number: ${{ github.event.pull_request.number }}"
-          echo "PR Title: ${{ github.event.pull_request.title }}"
-          echo "PR Author: ${{ github.event.pull_request.user.login }}"
-          echo "PR Action: ${{ github.event.action }}"
-          echo "Commit SHA: ${{ github.event.pull_request.head.sha }}"
-          echo "========================"
-      
-      - name: Check if PR template files changed
-        id: check-files
-        run: |
-          echo "Checking which files were modified..."
-          
-          CHANGED_FILES=$(git diff --name-only ${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }})
-          echo "Changed files:"
-          echo "$CHANGED_FILES"
-          
-          if echo "$CHANGED_FILES" | grep -q "^pr-template/"; then
-            echo "template_files_changed=true" >> $GITHUB_OUTPUT
-            echo "✓ PR template files were modified"
-          else
-            echo "template_files_changed=false" >> $GITHUB_OUTPUT
-            echo "ℹ️  No PR template files were modified"
-          fi
-      
-      - name: Validate PR template files exist
-        if: steps.check-files.outputs.template_files_changed == 'true'
-        run: |
-          echo "=== Validating PR Template Files ==="
-          
-          required_files=(
-            "pr-template/project-config.yml"
-            "pr-template/table-metadata.yml"
-            "pr-template/maintenance-config.yml"
-          )
-          
-          all_exist=true
-          for file in "${required_files[@]}"; do
-            if [ -f "$file" ]; then
-              echo "✓ Found: $file"
-            else
-              echo "✗ Missing: $file"
-              all_exist=false
-            fi
-          done
-          
-          if [ "$all_exist" = false ]; then
-            echo "❌ Some required files are missing"
-            exit 1
-          fi
-          
-          echo "✓ All required files exist"
-      
-      - name: Validate YAML syntax
-        if: steps.check-files.outputs.template_files_changed == 'true'
-        run: |
-          echo "=== Validating YAML Syntax ==="
-          
-          pip install yamllint --quiet
-          
-          yamllint -d relaxed pr-template/*.yml
-          
-          if [ $? -eq 0 ]; then
-            echo "✓ All YAML files have valid syntax"
-          else
-            echo "❌ YAML syntax validation failed"
-            exit 1
-          fi
-      
-      - name: Validate required fields
-        if: steps.check-files.outputs.template_files_changed == 'true'
-        run: |
-          echo "=== Validating Required Fields ==="
-          
-          sudo apt-get install -y jq --quiet
-          
-          if [ -f "pr-template/project-config.yml" ]; then
-            echo "Checking project-config.yml..."
-            
-            PROJECT_NAME=$(grep "^project_name:" pr-template/project-config.yml | cut -d' ' -f2-)
-            PROJECT_LOCATION=$(grep "^project_location:" pr-template/project-config.yml | cut -d' ' -f2-)
-            
-            if [ -z "$PROJECT_NAME" ]; then
-              echo "❌ Missing project_name in project-config.yml"
-              exit 1
-            fi
-            
-            if [ -z "$PROJECT_LOCATION" ]; then
-              echo "❌ Missing project_location in project-config.yml"
-              exit 1
-            fi
-            
-            echo "✓ project_name: $PROJECT_NAME"
-            echo "✓ project_location: $PROJECT_LOCATION"
-          fi
-          
-          if [ -f "pr-template/table-metadata.yml" ]; then
-            echo "Checking table-metadata.yml..."
-            
-            TABLE_NAME=$(grep "^table_name:" pr-template/table-metadata.yml | cut -d' ' -f2-)
-            TABLE_TYPE=$(grep "^table_type:" pr-template/table-metadata.yml | cut -d' ' -f2-)
-            
-            if [ -z "$TABLE_NAME" ]; then
-              echo "❌ Missing table_name in table-metadata.yml"
-              exit 1
-            fi
-            
-            if [ -z "$TABLE_TYPE" ]; then
-              echo "❌ Missing table_type in table-metadata.yml"
-              exit 1
-            fi
-            
-            echo "✓ table_name: $TABLE_NAME"
-            echo "✓ table_type: $TABLE_TYPE"
-            
-            if [[ ! "$TABLE_TYPE" =~ ^(EXTERNAL|MANAGED|VIEW)$ ]]; then
-              echo "❌ Invalid table_type: $TABLE_TYPE (must be EXTERNAL, MANAGED, or VIEW)"
-              exit 1
-            fi
-          fi
-          
-          if [ -f "pr-template/maintenance-config.yml" ]; then
-            echo "Checking maintenance-config.yml..."
-            
-            ORPHANS_TTL=$(grep "^orphans_ttl:" pr-template/maintenance-config.yml | cut -d' ' -f2-)
-            SNAPSHOTS_TTL=$(grep "^snapshots_ttl:" pr-template/maintenance-config.yml | cut -d' ' -f2-)
-            
-            if [ -z "$ORPHANS_TTL" ]; then
-              echo "❌ Missing orphans_ttl in maintenance-config.yml"
-              exit 1
-            fi
-            
-            if [ -z "$SNAPSHOTS_TTL" ]; then
-              echo "❌ Missing snapshots_ttl in maintenance-config.yml"
-              exit 1
-            fi
-            
-            echo "✓ orphans_ttl: $ORPHANS_TTL"
-            echo "✓ snapshots_ttl: $SNAPSHOTS_TTL"
-            
-            if ! [[ "$ORPHANS_TTL" =~ ^[0-9]+$ ]]; then
-              echo "❌ orphans_ttl must be a number, got: $ORPHANS_TTL"
-              exit 1
-            fi
-            
-            if ! [[ "$SNAPSHOTS_TTL" =~ ^[0-9]+$ ]]; then
-              echo "❌ snapshots_ttl must be a number, got: $SNAPSHOTS_TTL"
-              exit 1
-            fi
-          fi
-          
-          echo "✓ All required fields validated successfully"
-      
-      - name: Check for sensitive data
-        if: steps.check-files.outputs.template_files_changed == 'true'
-        run: |
-          echo "=== Checking for Sensitive Data ==="
-          
-          patterns=(
-            "password"
-            "secret"
-            "api_key"
-            "token"
-            "credential"
-          )
-          
-          sensitive_found=false
-          for pattern in "${patterns[@]}"; do
-            if grep -i "$pattern" pr-template/*.yml 2>/dev/null | grep -v "^#"; then
-              echo "⚠️  Found potential sensitive data: $pattern"
-              sensitive_found=true
-            fi
-          done
-          
-          if [ "$sensitive_found" = true ]; then
-            echo "❌ Please remove sensitive data from PR template files"
-            exit 1
-          fi
-          
-          echo "✓ No sensitive data detected"
-      
-      - name: Validate file sizes
-        if: steps.check-files.outputs.template_files_changed == 'true'
-        run: |
-          echo "=== Validating File Sizes ==="
-          
-          MAX_SIZE=$((1 * 1024 * 1024))
-          
-          for file in pr-template/*.yml; do
-            if [ -f "$file" ]; then
-              SIZE=$(stat -f%z "$file" 2>/dev/null || stat -c%s "$file" 2>/dev/null)
-              SIZE_MB=$(echo "scale=2; $SIZE / 1024 / 1024" | bc)
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            // ---------------------------
+            // Config
+            // ---------------------------
+            const REQUIRED_LABELS = [
+              "Channels:",
+              "Headless:",
+              "Business Issue:",
+              "Crew Name:",
+              "Product Owner Name:",
+              "Product Owner Email:",
+              "Tech Lead Name:",
+              "Tech Lead Email:",
+              "Crew Lead Name:",
+              "Crew Lead Email:",
+              "Team Distribution List Email:",
+              "Commando Brief:",
+              "Comments:",
+              "SPG:"
+            ];
+            const checkName = "PR Template Validation";
+            // ---------------------------
+
+            const pr = context.payload.pull_request;
+            if (!pr) throw new Error("No pull request found in context.");
+
+            const baseOwner = context.repo.owner;
+            const baseRepo = context.repo.repo;
+            const headSha = pr.head.sha;
+            const prNumber = pr.number;
+
+            // Get the list of changed files
+            const filesResp = await github.rest.pulls.listFiles({
+              owner: baseOwner,
+              repo: baseRepo,
+              pull_number: prNumber,
+              per_page: 300
+            });
+
+            console.log(`\n=== PR Changed Files ===`);
+            console.log(`Total files changed: ${filesResp.data.length}`);
+            filesResp.data.forEach(f => {
+              console.log(`  - ${f.filename}`);
+            });
+
+            // Collect target directories (businessConfig/<X>)
+            const targets = new Set();
+            for (const f of filesResp.data) {
+              const p = f.filename;
+              const segs = p.split("/");
+              if (segs.length >= 2 && segs[0] === "businessConfig") {
+                targets.add(`businessConfig/${segs[1]}`);
+              }
+            }
+
+            console.log(`\nTarget businessConfig directories:`);
+            targets.forEach(t => console.log(`  - ${t}`));
+
+            // ✅ Skip if nothing under businessConfig/
+            if (targets.size === 0) {
+              console.log("No files under businessConfig/ — skipping validation.");
+              await github.rest.checks.create({
+                owner: baseOwner,
+                repo: baseRepo,
+                name: checkName,
+                head_sha: headSha,
+                status: "completed",
+                conclusion: "success",
+                output: {
+                  title: "Skipped",
+                  summary: "No businessConfig/ changes detected.",
+                  text: "This PR does not modify any businessConfig/ paths."
+                }
+              });
+              return;
+            }
+
+            // Normalize PR body
+            const bodyRaw = pr.body || "";
+            const body = bodyRaw
+              .replace(/\*\*/g, "")
+              .replace(/[_>`~]/g, "")
+              .replace(/\r\n/g, "\n")
+              .trim();
+
+            const lines = body.split("\n");
+            const result = {};
+            const missing = [];
+
+            // Helper: detect placeholder values
+            function isPlaceholderValue(v) {
+              if (!v) return true;
+              const s = v.trim().toLowerCase();
+              if (/^na$/i.test(s)) return false;
+              if (/^\(.+\)$/i.test(v.trim())) return true;
+              if (/e\.g\.|eg:|example|choose one|please fill|please enter|please select/i.test(s)) {
+                return true;
+              }
+              if (s.length < 2) return false;
+              return false;
+            }
+
+            // Parse PR fields
+            for (let i = 0; i < lines.length; i++) {
+              const line = lines[i].trim();
               
-              if [ "$SIZE" -gt "$MAX_SIZE" ]; then
-                echo "❌ File $file is too large: ${SIZE_MB}MB (max 1MB)"
-                exit 1
-              fi
+              const labelMatch = REQUIRED_LABELS.find(label =>
+                line.toLowerCase().startsWith(label.toLowerCase())
+              );
+              if (!labelMatch) continue;
+
+              let value = line.substring(labelMatch.length).trim();
               
-              echo "✓ $file: ${SIZE_MB}MB"
-            fi
-          done
-      
-      - name: Count lines and report metrics
-        if: steps.check-files.outputs.template_files_changed == 'true'
+              if (!value) {
+                let j = i + 1;
+                while (j < lines.length) {
+                  const nextLine = lines[j].trim();
+                  if (REQUIRED_LABELS.some(lbl => 
+                    nextLine.toLowerCase().startsWith(lbl.toLowerCase())
+                  )) {
+                    break;
+                  }
+                  if (nextLine && nextLine.length > 0) {
+                    value = nextLine;
+                    break;
+                  }
+                  j++;
+                }
+              }
+
+              value = (value || "")
+                .replace(/[*_`>~-]/g, "")
+                .replace(/\s+/g, " ")
+                .trim();
+
+              if (isPlaceholderValue(value)) {
+                missing.push(labelMatch.replace(/:$/, ""));
+              } else {
+                result[labelMatch.replace(/:$/, "")] = value;
+              }
+            }
+
+            // Validation failed
+            if (missing.length > 0) {
+              const missingList = missing.map(m => `- ${m}`).join("\n");
+              const commentBody = [
+                "⚠️ **PR validation failed**",
+                "",
+                "**Missing or placeholder fields:**",
+                missingList,
+                "",
+                "Please fill all fields with real values. Use `NA` if not applicable."
+              ].join("\n");
+
+              await github.rest.issues.createComment({
+                owner: baseOwner,
+                repo: baseRepo,
+                issue_number: prNumber,
+                body: commentBody
+              });
+
+              await github.rest.checks.create({
+                owner: baseOwner,
+                repo: baseRepo,
+                name: checkName,
+                head_sha: headSha,
+                status: "completed",
+                conclusion: "failure",
+                output: {
+                  title: "Validation failed",
+                  summary: `Missing ${missing.length} field(s).`,
+                  text: `Missing fields:\n${missingList}`
+                }
+              });
+
+              throw new Error("Validation failed");
+            }
+
+            // Validation passed
+            console.log(`\n✓ Validation passed`);
+
+            // Create artifact payload
+            const artifactPayload = {
+              prNumber,
+              targets: Array.from(targets),
+              data: result,
+              timestamp: new Date().toISOString()
+            };
+
+            console.log(`\n=== Artifact Content ===`);
+            console.log(`PR Number: ${prNumber}`);
+            console.log(`Targets: ${Array.from(targets).join(', ')}`);
+            console.log(`\nTemplate Data:`);
+            console.log(JSON.stringify(result, null, 2));
+            console.log(`\nFull Artifact Payload:`);
+            console.log(JSON.stringify(artifactPayload, null, 2));
+
+            // Export for next step
+            core.exportVariable('VALIDATION_PASSED', 'true');
+            core.exportVariable('ARTIFACT_PAYLOAD', JSON.stringify(artifactPayload));
+            core.exportVariable('PR_NUMBER', prNumber.toString());
+
+      - name: Upload artifact with PR data
+        if: env.VALIDATION_PASSED == 'true'
         run: |
-          echo "=== PR Template Metrics ==="
+          # Create artifact directory
+          mkdir -p artifact_data
           
-          total_lines=0
-          for file in pr-template/*.yml; do
-            if [ -f "$file" ]; then
-              lines=$(wc -l < "$file")
-              total_lines=$((total_lines + lines))
-              echo "Lines in $file: $lines"
-            fi
-          done
+          # Save payload to file
+          cat > artifact_data/payload.json << 'EOF'
+          ${{ env.ARTIFACT_PAYLOAD }}
+          EOF
           
-          echo "Total lines: $total_lines"
-      
-      - name: Build validation status
-        id: validation-status
+          cat artifact_data/payload.json
+
+      - name: Upload artifact
+        if: env.VALIDATION_PASSED == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: pr-${{ env.PR_NUMBER }}-input-json
+          path: artifact_data/payload.json
+          retention-days: 30
+
+      - name: Display uploaded artifact content
+        if: env.VALIDATION_PASSED == 'true'
         run: |
-          echo "validation_passed=true" >> $GITHUB_OUTPUT
-      
-      - name: Comment on PR - Validation Passed
-        if: success() && steps.check-files.outputs.template_files_changed == 'true'
+          echo "=== Artifact Successfully Uploaded ==="
+          echo ""
+          echo "Artifact Name: pr-${{ env.PR_NUMBER }}-input-json"
+          echo "File: artifact_data/payload.json"
+          echo ""
+          echo "Content:"
+          cat artifact_data/payload.json | jq '.'
+          echo ""
+          echo "This will be used by Workflow 2 to generate input.json files"
+
+      - name: Post validation success
+        if: env.VALIDATION_PASSED == 'true'
         uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
+            const pr = context.payload.pull_request;
+            const checkName = "PR Template Validation";
+            
+            const payload = JSON.parse(process.env.ARTIFACT_PAYLOAD);
+            const filesList = payload.targets.map(t => `- ${t}/input.json`).join('\n');
+            
+            await github.rest.checks.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              body: `✅ **Validation Passed**
-
-**PR Template Validation Results:**
-- ✓ YAML syntax is valid
-- ✓ All required files present
-- ✓ All required fields populated
-- ✓ No sensitive data detected
-- ✓ File sizes within limits
-
-**Next Steps:**
-1. Wait for code review
-2. Address any review comments
-3. Once approved, merge the PR
-4. Workflow 2 will automatically create the metadata branch
-
-**Branch creation will only happen after merge.**`
-            });
-      
-      - name: Comment on PR - Validation Failed
-        if: failure() && steps.check-files.outputs.template_files_changed == 'true'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `❌ **Validation Failed**
-
-Please fix the issues above and push an update to this PR.
-
-**Common Issues:**
-- Missing required fields (project_name, table_name, etc.)
-- Invalid YAML syntax
-- Invalid enum values (table_type must be EXTERNAL, MANAGED, or VIEW)
-- Sensitive data in template files
-- File size exceeded
-
-Check the workflow output above for specific error messages.`
-            });
-      
-      - name: Comment on PR - No template changes
-        if: steps.check-files.outputs.template_files_changed == 'false'
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: `ℹ️ **No PR Template Changes Detected**
-
-This PR doesn't modify any PR template files, so validation was skipped.
-
-If you intended to update PR templates, make sure to modify files in the \`pr-template/\` directory.`
-            });
-      
-      - name: Create check run
-        if: always()
-        uses: actions/github-script@v7
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-          script: |
-            const conclusion = '${{ job.status }}' === 'success' ? 'success' : 'failure';
-            github.rest.checks.create({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              name: 'PR Template Validation',
-              head_sha: '${{ github.event.pull_request.head.sha }}',
-              status: 'completed',
-              conclusion: conclusion,
+              name: checkName,
+              head_sha: pr.head.sha,
+              status: "completed",
+              conclusion: "success",
               output: {
-                title: 'PR Template Validation Results',
-                summary: `Validation ${conclusion === 'success' ? 'passed' : 'failed'}`,
-                text: `Check run completed at ${new Date().toISOString()}`
+                title: "Validation succeeded",
+                summary: `Ready to merge (${payload.targets.length} file(s) to create)`,
+                text: filesList
               }
             });
 
-  notify-status:
-    name: Notify Validation Status
-    needs: validate-pr-template
-    if: always()
-    runs-on: ubuntu-latest
-    
-    steps:
-      - name: Set status based on validation
-        run: |
-          if [ "${{ needs.validate-pr-template.result }}" = "success" ]; then
-            echo "✓ Workflow 1 validation completed successfully"
-            echo "PR is now ready for review"
-          else
-            echo "✗ Workflow 1 validation failed"
-            echo "Please fix the issues and try again"
-          fi
+            const templateData = Object.entries(payload.data)
+              .map(([key, value]) => `- **${key}:** ${value}`)
+              .join('\n');
+
+            const body = [
+              "✅ **Validation passed**",
+              "",
+              "**Template data captured:**",
+              templateData,
+              "",
+              "**Files to be created:**",
+              filesList,
+              "",
+              "When this PR is merged, the following files will be automatically created in the base repository:"
+            ].join("\n");
+
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: body
+            });
